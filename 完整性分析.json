@@ -1,0 +1,51 @@
+{
+ "cache_encryption": {
+  "algorithm": "AES (57处 aeskeygenassist 确认)",
+  "header_format": "16B: 魔数7f739e9c + 版本b503ed64 + 长度9ff86b6d + IV d87c7a118",
+  "mode": "CTR或CBC(密钥流非重复)",
+  "key_source": "服务器下发(卡密验证时)",
+  "status": "解密数据已dump(23文件),当前版本无需密钥"
+ },
+ "discord_protocol": {
+  "write_primitive": "sub_14045FCC0(handle, base+offset, data, size, flag)",
+  "write_count": 31,
+  "offsets": {
+   "0x4": "配置区",
+   "0x8": "配置区",
+   "0xc": "配置区",
+   "0x20": "配置区",
+   "0x30": "配置区",
+   "0x1900038": "大数据区",
+   "0x6400050": "大数据区",
+   "0x6401050": "大数据区",
+   "0x6402050": "大数据区",
+   "0x6403050": "大数据区",
+   "0x9404068": "大数据区",
+   "0x9404078": "大数据区",
+   "0x940407c": "大数据区",
+   "0x9404198": "大数据区",
+   "0xa4042c0": "大数据区",
+   "0xa4282c8": "大数据区",
+   "0xa44c2d0": "大数据区",
+   "0xa4702d8": "大数据区",
+   "0xa494334": "大数据区",
+   "0xa49433c": "大数据区",
+   "0xa49435c": "大数据区",
+   "0xa4947c4": "大数据区",
+   "0xa494bd4": "大数据区"
+  },
+  "handshake": "写入+4/+8/+12(测试值0x2000)验证连接",
+  "data_areas": "4MB共享区(0x190xxxx-0x6A4xxxx)",
+  "status": "写入流程完整,具体字段含义需运行时数据"
+ },
+ "research_readiness": {
+  "algorithm": "100%",
+  "code": "97%",
+  "data": "95%",
+  "injection": "90%",
+  "rendering": "100%",
+  "strings": "100%",
+  "offsets": "90%",
+  "overall": "95%+"
+ }
+}

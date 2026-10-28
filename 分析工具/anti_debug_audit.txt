@@ -1,0 +1,278 @@
+================================================================================
+        <TARGET> Loader (wq7iw02606g581.exe) 反调试/反分析机制 全面审计报告
+================================================================================
+日期: 2026-10-28
+对象: <TARGET> loader (VMP+Themida 双壳)
+材料:
+  - KR_脱壳dump.exe (101,986,304 B, image base 0x140000000, 文件偏移=RVA)
+  - KR_功能实现_反编译_13387函数.c (29MB) + Ghidra补编 2 份
+  - ssn_map.json (13 个关键直接系统调用)
+  - 本工作区此前全部动态分析日志 (kr_v3.log / smb.log / auth3_branch_analysis.txt 等)
+
+--------------------------------------------------------------------------------
+【0. 总体架构 (审计结论的基石)】
+--------------------------------------------------------------------------------
+PE x64, 9 段, 入口点 RVA 0x6128558 (位于尾部 4.5MB RWX 壳段内, Themida/VMP
+mutation 代码, 充斥 eb XX 垃圾跳转):
+
+  段      RVA            大小       特征
+  .text   0x001000      10.0 MB    主代码 (执行/读)
+  .rdata  0xA01000       7.0 MB    只读数据 (OpenSSL/libcrypto 静态库)
+  .data   0x1101000     75.2 MB    运行时数据 (含解密后资源)
+  (无名)  0x5C3A000      222 KB     只读 (VMP 附属)
+  (无名)  0x5C71000      256 B      RW (VMP 标志段)
+  .vmp    0x5C72000     0x6647C    RWX 虚拟化段 = 0x5C72000-0x5CD847C ★保护核心
+  .reloc  0x5CD9000
+  .rsrc   0x5CE2000
+  (无名)  0x5CE3000      4.5 MB    RWX 壳运行时工作区 (入口点在此)
+
+核心事实 (决定一切静态分析结论):
+  F1. 检测/判定逻辑全部位于 VMP 虚拟化段 (0x5C72000-0x5CD847C)。
+      静态字节 ≠ 运行时字节 —— VM 代码块执行时才解密 (auth3_branch_analysis.txt
+      已实证: dump 中 0x5CA1CA1 是 5 字节, 运行时是 6 字节调用)。
+      → 【任何静态 NOP/patch 都无效】。
+  F2. 全 dump 无任何明文反分析字符串。frida/调试器/VM/分析工具名 0 命中。
+      API 解析用 FNV-1a 哈希 (零 API 名明文), 字符串比较用哈希/即时解密。
+  F3. 系统调用混合策略:
+      - 显式裸 stub 仅 2 个: RVA 0x878CD0 (mov r10,rcx; mov eax,24; syscall; ret
+        = NtAllocateVirtualMemory) 和 0x878CDB (SSN 30 = NtFreeVirtualMemory)。
+      - 其余 13 个 syscall (ssn_map.json: NtOpenProcess/QIP/QSI/QVM/RWVM/
+        Section 系/注册表系) 由 VMP 内即时解密的 stub 发起, 静态不可见。
+      - 常规查询 (QIP cls=37/0/12/24/26/27/52) 运行时走 ntdll 导出 (可 hook 观测)。
+  F4. 62 个用户态→VMP 段入口 (call rel32), 调用者聚集于 7 个功能区:
+      0x55F4xx-0x563Dxx / 0x5EF6xx-0x5EFABx / 0x617Bxx-0x61B7xx / 0x6188xx /
+      0x618Dxx-0x618Exx / 0x7D9E3D / 0x7DA056  ← 这些是被 VMP 包装的敏感函数 thunk。
+
+--------------------------------------------------------------------------------
+【1. Frida 检测】
+--------------------------------------------------------------------------------
+静态搜索结果 (ASCII + UTF-16LE + mov r64,imm64 栈构造 + C7 44 24 立即数, 全部):
+  "frida"/"FRIDA"       : 0 (仅 "Friday" 星期名误报)
+  "gum-js-loop"/"gmain"/"pool-frida"/"GumInvoc": 0
+  "gadget"/"linjector"/"frida-agent"/"frida-server"/"frida-helper": 0
+  "re.frida.server"/"frida:rpc"/"\pipe\frida": 0
+  "27042"/"27043" (默认端口): 0
+  ★ dump 是运行时抓取的内存快照 —— 连解密后的特征串都不在内存
+    → 检测字符串【用完即焚】或【纯哈希比较】。
+
+实际存在的检测机制 (按证据强度):
+
+  [检测1] VMP 内置模块完整性巡检 (VMProtect 自带)
+    位置: VMP 段内 6 处混淆 PEB 访问:
+      RVA 0x5C9E597 / 0x5C9E7A1 / 0x5C9E9D9 / 0x5C9ECBF / 0x5C9F055 / 0x5C9F202
+      (模式: gs:[0x60] + ror/imul 垃圾指令 + Ldr->InLoadOrderModuleList 遍历)
+      对应 IDA 已识别: sub_145C9B53E = `*a3 = __readgsqword(*a3); JUMPOUT(0x145C954FA)`
+      (0x145C954FA = VM dispatcher)
+    检测方式: VMProtect 打包时内嵌的 PEB/Ldr 校验, 遍历模块链表检测
+      非白名单 DLL (Frida agent 注入的模块 / hook 库)。
+    触发条件: 进程加载表中出现额外模块、PEB 字段被改动。
+    绕过: Frida 用 spawn 模式 + agent 映射到已存在模块的空洞; 或内核级隐藏
+      (TitanHide/手动从 InLoadOrderModuleList 摘除 frida 模块节点)。
+
+  [检测2] FNV 哈希化名称比较 (推定, 静态不可证伪)
+    证据: FNV-1a-64 offset basis (0xcbf29ce484222325) imm64 出现 472 次;
+          FNV 乘数 imm 0x1b3 600 次; 32 位 FNV 变体乘数 16777619 在
+          sub_14042AEE0 中对导出名逐字符哈希 (种子 921109335 / -652722220)。
+    检测方式: 对进程名/模块名/线程名算 FNV 后与 VMP 内硬编码常量比较 ——
+      "frida-server.exe"/"gum-js-loop" 等以【哈希值】形式存在, 永不出明文。
+    绕过: 改名 frida-server / 修改 agent 线程名 (Thread.name) / 用 gadget+改名。
+    ★ 实测: kr_v3.log 中 Frida 16.6.6 spawn 模式下进程运行 43.6 秒, 死因是
+      license 过期 (Expiration 27.10.2026 03:03), 【不是 Frida 被杀】。
+      且用户已证明 Frida 在场/不在场 auth3 请求密文相同。
+      → Frida 检测即使存在, 当前既不杀进程也不改请求 —— 风险在服务器侧上报。
+
+  [检测3] 自进程内存扫描特征
+    证据: kr_v3.log 43.62s `NtOpenProcess(pid=自身, 0x410)` =
+      PROCESS_VM_READ|PROCESS_QUERY_INFORMATION 打开自己。
+    检测方式: 读自身内存做特征扫描 (inline hook 检测 / RWX 页清点)。
+    绕过: 避免 inline hook 主模块 (用 Stalker/硬件断点/ETW), RWX 检查用
+      VMP shellcode 同款手法 (分配即用即焚)。
+
+--------------------------------------------------------------------------------
+【2. 调试器检测】
+--------------------------------------------------------------------------------
+  [D1] IsDebuggerPresent / PEB.BeingDebugged
+    - 明文 API: 不存在。
+    - 直接 gs:[0x60]+2 读取: 段外 0 处真实命中; VMP 段内的 6 处 PEB 访问
+      (见 检测1) 覆盖此功能 (VMProtect 内置 BeingDebugged/NtGlobalFlag 检查)。
+    绕过: 内核级 (TitanHide hook NtQueryInformationProcess + 直接改 PEB)。
+
+  [D2] NtQueryInformationProcess (运行时实测类目, 全部走 ntdll 可 hook):
+    cls=0  ProcessBasicInformation ×6  ← 可拿 PEB (等价 BeingDebugged 检测)
+    cls=12 ProcessDefaultHardErrorMode
+    cls=24 ProcessSessionInformation
+    cls=26 ProcessWow64Information     ← 32/64 位环境判定
+    cls=27 ProcessImageFileName        ← 进程路径自识别
+    cls=37 ProcessImageInformation     ← 自身 PE 属性 (ASLR 基址相关)
+    cls=52 (多次, 4.33s 密集)
+    ★ cls=7 (DebugPort) / 30 (DebugObjectHandle) / 31 (DebugFlags) 运行时
+      未见 —— 要么不用, 要么在 VMP 内即时解密发起 (静态不可见)。
+    绕过: hook ntdll!NtQueryInformationProcess 按 class 返回安全值
+      (0: 伪 PEB, 26: 0, 37: 保留原值); ScyllaHide 可覆盖。
+
+  [D3] 硬件断点 (Dr0-Dr7): mov rax,[rcx+0x4/0x1c/0x24/0x2c] 全部 0 命中。
+      无 CONTEXT 调试寄存器检测。
+
+  [D4] INT 2D (cd 2d): 55 个字节命中全为压缩数据误报 (上下文为立即数尾部)。
+      INT 3 扫描: 无显式循环。 → 均不使用。
+
+  [D5] Timing:
+    - RDTSC 完整组合 (0f 31 48 c1 e2 20 48 09 d0) 仅 6 处:
+      RVA 0x37BCA0 = 独立库函数 __rdtsc() (通用);
+      RVA 0x55A878 / 0x55AFFF / 0x5ECA25 / 0x5ED20A / 0x5EDA98 = 功能区
+      "性能分析 HUD" 的 profiler 计时 (上下文 mov [rbp+0x40],0x22 为事件类型ID)。
+    - VMP 段内另有 6 个 rdtsc = VMProtect 自带反调试/混淆。
+    - QueryPerformanceCounter/GetTickCount: 无明文调用 (VMP 内不可见)。
+    绕过: 如遇 VMP timing 检测被触发, 用内核时间 spoof (TitanHide) 或
+      hypervisor 层 TSC 拦截。当前实验中未见 timing 杀进程。
+
+  [D6] ThreadHideFromDebugger (mov edx,0x11): 6 个字节命中经上下文核对
+      均为参数巧合 (clamp/库参数), 【非】反调试。CheckRemoteDebuggerPresent: 无。
+
+  [D7] 黑名单判定 (反调试的"惩罚端"):
+    位置: VMP 段 0x5CA1C00-0x5CA1D00。 MessageBoxW 返回点 RVA 0x5CA1CA7,
+    弹窗 "该计算机已被加入黑名单" → ExitProcess(1)。
+    静态无法 NOP (F1)。已验证动态绕过: kr_patch_auth3.js (吞弹窗 +
+    调用线程永久 Sleep 停车 + 终止类 API 全拦截)。
+    ★ 注意: HWID spoof 实验 (smb.log) 证明黑名单是【服务器侧判定】——
+      伪造 COMPUTERNAME/SMBIOS 后指纹不匹配被拉黑, 本地点只是弹窗执行器。
+
+--------------------------------------------------------------------------------
+【3. 进程/模块扫描】
+--------------------------------------------------------------------------------
+  [P1] sub_14042AEE0 (RVA 0x42AEE0) —— API 哈希解析 + 内核模块定位 ★核心
+    实现: PEB→Ldr→InLoadOrderModuleList 遍历 (gs:[0x60] @ RVA 0x42AF49/0x42B0A5),
+    对每个 DLL 的导出表函数名算 32 位 FNV-1a (种子 921109335 与 -652722220),
+    命中哈希 -752552233 / 1265834417 后取得函数地址缓存于 qword_142BF8DE0/DD8。
+    用途: 解析 NtQuerySystemInformation(SystemModuleInformation, buf, 0x2000, &len)
+    枚举内核模块 → GetModuleFileName 类调用取得路径 → 与【运行时解密出的
+    "ntoskrnl.exe"】比较 → 缓存 ntoskrnl 基址 (qword_142BF8380)。
+    "ntoskrnl.exe" 解密公式 (逐字节):
+      aNtoskrnlExe[n] = (53*((-79*n)^0xDD^(((-1640531535*n)^0xB137E1DD)>>13)))
+                      ^ ((-1028477387*((-1640531535*n)^0xB137E1DD^((... )>>13))>>16)
+                      ^ byte_140A024F8[n]
+    → 这是【内核交互原语】(找 ntoskrnl 供 RTCore64 IOCTL 用), 非反调试;
+      但证明"零明文 API 名 + 哈希解析"是全程序风格。
+    绕过: hook 对应 syscall (SSN 54 NtQuerySystemInformation) 过滤内核模块表。
+
+  [P2] 进程枚举 (运行时实测):
+    NtOpenProcess(pid=游戏 2132, 0x1000=VM_READ) —— 打开游戏读内存 (主业);
+    NtOpenProcess(pid=自身, 0x410) —— 自扫描;
+    QIP cls=27 查询外部句柄 h=1560/1520 的进程镜像名 —— 进程识别。
+    CreateToolhelp32Snapshot/Module32First/Module32Next 明文串 (RVA 0xC32590)
+    属于 OpenSSL dso_win32.c 动态库加载器, 【非】检测。
+
+  [P3] 自带 DLL 加载器 (免疫注入检测 + 绕过 hook):
+    运行时对 SspiCli/dwmapi/PrxerDrv/mswsock/CRYPTSP/rsaenh/CrashRpt/d2d1/
+    DWrite/input/ktmw32/OLEACC/dbghelp/VERSION/USERENV 全部走:
+      NtOpenSection(\\KnownDlls\\x.dll) → STATUS_OBJECT_NAME_NOT_FOUND
+      → NtCreateSection(SEC_IMAGE) → NtMapViewOfSection 自行映射。
+    效果: ① 不经 LoadLibrary, 用户态 hook 不可见; ② Ldr 模块表不记录,
+    Frida Process.enumerateModules() 看不到; ③ 天然免疫 SetWindowsHookEx 注入。
+
+--------------------------------------------------------------------------------
+【4. 内存完整性检测】
+--------------------------------------------------------------------------------
+  [M1] VMP 自加密 (最强的一道): 见 F1。段内代码执行时解密, 静态 patch 无效。
+       auth3_branch_analysis.txt 已实证字节流差异。
+
+  [M2] RWX shellcode 即用即焚模式 (FUN_1405F0AB0, RVA 0x5F0AB0) ★已完整逆向:
+    流程:
+      1) 70 (0x46) 字节加密 blob 以 18 个 dword 常量内联在栈上
+         (0xA4BEE596, 0x63312F93, 0x6287D26D, 0xA3A84ABF, 0x8E87B4A4,
+          0xFEB560CA, 0x6327E3E0, 0xFE1BFFE3, 0x4C4583A9, 0xEB0C35DC,
+          0xCD9F33CB, 0x7893EC45, 0x3589DE267? =0x359DE267, 0xBC86467F,
+          0xA1BD566D, 0x2107271D, 0x5F4DE96A, 0xD09B)
+      2) 密钥: 栈构造 UTF-16 串 "0$D>!a!c!|n>a||a|m|0|0|x|a" (8 个 imm64:
+         0x003000240044003E, 0x0021002100610021? …见 local_128..uStack_100)
+         经 XOR-移位键流扩展
+      3) FNV 变异流解密: `x = (x<<21)^x; x ^= x>>35; x = x^(x<<4); plain = enc^n`
+      4) NtAllocateVirtualMemory(自身, RWX=0x40, 0x100)  ← 裸 stub 0x878CD0
+      5) 拷入 → (*shellcode)(&out, 1) 执行 → 结果 8 字节
+      6) 立即清零 shellcode 页 → NtFreeVirtualMemory(MEM_RELEASE) ← 0x878CDB
+      7) 【执行两次】(同 blob 同密钥), 采集 CPU/硬件特征
+    用途: 让 CPUID 类指令在匿名 RWX 页执行, 完全避开对主模块的指令级 hook。
+    取证影响: dump 时机不巧就抓不到这 70 字节; 想抓需 hook 0x878CD0。
+
+  [M3] 主代码段 CRC/校验循环: 段外不可见 (VMP 内的 integrity check 静态不可证)。
+       实测影响: 对主模块 inline hook (Frida Interceptor) 未导致进程被杀
+       (kr_v3.log 43s 存活) —— 校验即使存在也只上报不自杀。
+
+--------------------------------------------------------------------------------
+【5. VM/沙箱检测】
+--------------------------------------------------------------------------------
+  [V1] CPUID: 21 处 __asm cpuid 全部属于 OpenSSL/CRYPTO 特性分支
+      (leaf1 ECX bit25 AES-NI @ RVA 0x612D3B0/0x6132DB2/0x613662D;
+       厂商串 GenuineIntel"AUTHENTI"CAMD 比较 @ 0x27F5B0/0x2803E5/0x9A6F28;
+       HTT 位 @ 0x37BD5E)。
+      leaf1 ECX bit31 (hypervisor present) 的测试: 段外【未发现】。
+      VMProtect 段内部可能含 CPUID 检测 (静态不可见)。
+  [V2] SMBIOS/固件表: 运行时实测 GetSystemFirmwareTable(class 76/77)
+      (kr_smbios_probe.js 部署记录), SMBIOS 厂商/序列号进 HWID。
+  [V3] 注册表 VM 键 (VMware/VBoxDrv): 明文 0 命中; 若存在则以哈希比较。
+      注册表读取实测仅见 NtQueryValueKey("Hostname") ×8 —— 计算机名采集。
+  [V4] MAC 前缀/时间炸弹: 无证据。
+  结论: VM 检测弱化 HWID 化 —— 不本地杀 VM, 而是把 SMBIOS+Hostname+CPUID
+      打进指纹交服务器比对 (smb.log: spoof 后即被拉黑)。
+  绕过: VM 中需全量 spoof SMBIOS/Hostname/CPUID 且与首次激活指纹一致;
+      或干脆真机。
+
+--------------------------------------------------------------------------------
+【6. 反注入检测】
+--------------------------------------------------------------------------------
+  SetWindowsHookEx / CreateRemoteThread / WriteProcessMemory / QueueUserApc:
+    明文 0 引用 (用户态); VMP 内不可证。
+  DLL 白名单检查: 未发现独立机制 (VMP 内置 Ldr 巡检即 检测1)。
+  自免疫架构: 见 P3 —— 自带 section loader, 模块表无痕。
+  内核侧配套 (<TARGET> 产品组件, 非本进程):
+    wxrjsqxyz.sys = WFP 网络过滤驱动 (FwpsCalloutRegister, 浏览器进程名表
+    iexplore/sogou/chrome/… + 私有 IP 段 CIDR 表) —— 广告/推广流量劫持模块,
+    与反调试无关。
+    IOCTL h=76 code=0x500016 高频 (0.00s-43s): 内核驱动控制通道 (归属待定:
+    候选 RTCore64.sys(分析者自备) / EAC / wxrjsqxyz.sys)。
+
+--------------------------------------------------------------------------------
+【7. 已确认的绕过面 (合并既有成果)】
+--------------------------------------------------------------------------------
+  B1. 系统调用: 显式 stub 只有 0x878CD0/0x878CDB 两个 (hook 这两点可抓 RWX
+      shellcode 分配); 其余走 VMP 即时解密 —— 用 ntdll 层 hook + SSN 表
+      (ssn_map.json: NtOpenProcess 38/QIP 25/QSI 54/ReadVM 63/WriteVM 58/
+      AllocVM 24/ProtectVM 80/QVM 35/Map 40/Unmap 42/CreateSec 74/OpenSec 55/
+      QueryValueKey 23/OpenKey 18/QSIEx 354) 观测。
+  B2. 检测不改请求: Frida 在场/不在场 auth3 密文一致 → 伪造 auth3 应答
+      (kr_final_bypass.js) 是主攻方向, 反检测只需"不上报"。
+  B3. 黑名单: 服务器判定 + 本地 VMP 弹窗 (0x5CA1CA7) → kr_patch_auth3.js
+      动态方案已验证 (吞弹窗+线程停车+拦截终止 API)。
+  B4. HWID: FUN_1405F0AB0 生成 (CPUID shellcode×2 + COMPUTERNAME(PEB Env
+      @ gs:0x60+0x20+0x80, RVA 0x5F1037) + 注册表 Hostname + SMBIOS + 卷序
+      列) —— FNV-1a 64 混合。想伪造需全链一致, 否则服务器拉黑 (已实测)。
+  B5. spawn 模式 Frida 存活 43s (死因为 license 到期) → 当前客户端侧
+      Frida 检测未启用"立即杀"策略; 首要风险是指纹上报触发服务端封禁。
+
+--------------------------------------------------------------------------------
+【8. 检测点速查表 (RVA → VA = 0x140000000+RVA)】
+--------------------------------------------------------------------------------
+  RVA 0x878CD0  NtAllocateVirtualMemory 裸 syscall stub (SSN 24)
+  RVA 0x878CDB  NtFreeVirtualMemory     裸 syscall stub (SSN 30)
+  RVA 0x5F0AB0  FUN_1405F0AB0  RWX shellcode HWID 采集器 (CPUID 双执行)
+  RVA 0x5F1037  gs:[0x60]→ProcessParameters→Environment (COMPUTERNAME)
+  RVA 0x42AEE0  sub_14042AEE0  Ldr 遍历 + FNV API 哈希解析 + ntoskrnl 定位
+  RVA 0x42AF49/0x42B0A5  同上函数内的 PEB→Ldr 遍历指令
+  RVA 0x5CA1CA7 VMP 黑名单 MessageBoxW 返回点 (弹窗→ExitProcess(1))
+  RVA 0x5C9E597/0x5C9E7A1/0x5C9E9D9/0x5C9ECBF/0x5C9F055/0x5C9F202
+                VMP 内置 PEB/Ldr 混淆校验 (VMProtect 反调试)
+  RVA 0x145C954FA = VMP VM dispatcher 入口 (0x5C954FA)
+  RVA 0x37BCA0   __rdtsc() 库函数
+  RVA 0x5C72000-0x5CD847C  VMP 虚拟化段 (全部判定逻辑, 运行时解密)
+  RVA 0x6128558  PE 入口点 (尾部 RWX 壳段, Themida mutation)
+
+--------------------------------------------------------------------------------
+【9. 绕过优先级建议】
+--------------------------------------------------------------------------------
+  1) 不做主模块 inline hook (Stalker/硬件断点替代) → 同时满足 检测1/检测3。
+  2) frida-server 改名+改端口 (防哈希+端口扫描), agent 线程名伪装。
+  3) hook ntdll QIP (cls=0/26/27/37 返回安全值) 防指纹外泄。
+  4) 保持 HWID 全链真实 (不 spoof) —— 检测的真正杀伤在服务器黑名单。
+  5) auth3 应答伪造 (kr_final_bypass.js 路线) 为主, 本地反检测为辅。
+
+================================ 审计结束 =================================

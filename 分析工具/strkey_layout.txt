@@ -1,0 +1,122 @@
+=== 字符串 key 存放布局探测 ===
+addr=0x140a0def4 key=0x9fb0bddc len=4 'tag[00]'
+   前8B: f77f000037fc4160 | 密文头8B: f6b408565b5ac900 | 尾8B: 5b5ac9000f0126da
+   key位置(相对addr): ±24B内无
+addr=0x140a0def8 key=0xaf8d089a len=3 'AI[00]'
+   前8B: 37fc4160f6b40856 | 密文头8B: 5b5ac9000f0126da | 尾8B: 000f0126da370000
+   key位置(相对addr): ±24B内无
+addr=0x140a0defc key=0xd79855a4 len=5 'dist[00]'
+   前8B: f6b408565b5ac900 | 密文头8B: 0f0126da37000000 | 尾8B: 0000008e88848440
+   key位置(相对addr): ±24B内无
+addr=0x140a0df04 key=0xf747a94e len=4 '38m[00]'
+   前8B: 0f0126da37000000 | 密文头8B: 8e888484403f449a | 尾8B: 403f449a5a01c100
+   key位置(相对addr): ±24B内无
+addr=0x140a0df08 key=0x1ee3fd34 len=7 'weapon[00]'
+   前8B: 370000008e888484 | 密文头8B: 403f449a5a01c100 | 尾8B: 006390aff7cab500
+   key位置(相对addr): ±24B内无
+addr=0x140a0df10 key=0x0f3e21fa len=6 'AK-74[00]'
+   前8B: 403f449a5a01c100 | 密文头8B: 6390aff7cab50000 | 尾8B: 0000c53609891677
+   key位置(相对addr): ±24B内无
+addr=0x140a0df18 key=0x676aa4bc len=7 'hpText[00]'
+   前8B: 6390aff7cab50000 | 密文头8B: c53609891677c500 | 尾8B: 00cd30e8664e0000
+   key位置(相对addr): ±24B内无
+addr=0x140a0df20 key=0x47c6e1f6 len=5 '100%[00]'
+   前8B: c53609891677c500 | 密文头8B: cd30e8664e000000 | 尾8B: 000000a6e2c63afd
+   key位置(相对addr): ±24B内无
+addr=0x140a0df28 key=0xbf9a322c len=10 'healthBar[00]'
+   前8B: cd30e8664e000000 | 密文头8B: a6e2c63afdafe0b9 | 尾8B: 00009e7cac754a04
+   key位置(相对addr): ±24B内无
+addr=0x140a0dfc8 key=0x4e19ceca len=10 'Range (m)[00]'
+   前8B: 17000ffe00000000 | 密文头8B: 2b4ba2ffc575a214 | 尾8B: 0000000000000545
+   key位置(相对addr): ±24B内无
+addr=0x140a0dfd8 key=0x660c01e0 len=8 'Outline[00]'
+   前8B: 7408000000000000 | 密文头8B: 0545f96e3e9419e6 | 尾8B: ae1172607b97c4ce
+   key位置(相对addr): ±24B内无
+addr=0x140a0dd6c key=0x7a2205bc len=5 'Type[00]'
+   前8B: 16eec4f93491f500 | 密文头8B: ed159b73fc000000 | 尾8B: 00000000000000be
+   key位置(相对addr): ±24B内无
+addr=0x140a0e030 key=0x0edc5c94 len=6 'Shape[00]'
+   前8B: c99d6ecf0c180000 | 密文头8B: 4180beb205450000 | 尾8B: 000041d138349600
+   key位置(相对addr): ±24B内无
+addr=0x140a0e038 key=0xf0a4e527 len=5 'Size[00]'
+   前8B: 4180beb205450000 | 密文头8B: 41d1383496000000 | 尾8B: 000000e98f2bde10
+   key位置(相对addr): ±24B内无
+addr=0x140a0e040 key=0x51736376 len=8 'Heading[00]'
+   前8B: 41d1383496000000 | 密文头8B: e98f2bde10177195 | 尾8B: 393c8689f70bf964
+   key位置(相对addr): ±24B内无
+addr=0x140a0e05c key=0x950277c8 len=5 'Name[00]'
+   前8B: aa042c1073000000 | 密文头8B: c029a93472000000 | 尾8B: 000000000000006a
+   key位置(相对addr): ±24B内无
+addr=0x140a0e068 key=0x77cafc1b len=9 'Distance[00]'
+   前8B: 7200000000000000 | 密文头8B: 6a045716656bf946 | 尾8B: 00000000000000a4
+   key位置(相对addr): ±24B内无
+addr=0x140a0e078 key=0xd9917aaa len=10 'Text size[00]'
+   前8B: d900000000000000 | 密文头8B: a4aa25dd18781b4a | 尾8B: 000000000000937e
+   key位置(相对addr): ±24B内无
+addr=0x140a0f020 key=0x90e0977d len=9 'Distance[00]'
+   前8B: 25fe9b08ef000000 | 密文头8B: c290079c7c734358 | 尾8B: 000000dd6be1f073
+   key位置(相对addr): ±24B内无
+addr=0x140a0f02c key=0xbc4c2ca5 len=5 'Path[00]'
+   前8B: 7c734358cd000000 | 密文头8B: dd6be1f073000000 | 尾8B: 0000000000000034
+   key位置(相对addr): ±24B内无
+addr=0x140a0f038 key=0xc01b63c5 len=10 'Max range[00]'
+   前8B: 7300000000000000 | 密文头8B: 3423b6987f4af5e8 | 尾8B: 0000bb4df1356c40
+   key位置(相对addr): ±24B内无
+addr=0x140a0e0e8 key=0xdebfaeb6 len=6 'Shape[00]'
+   前8B: 10c911ab03090000 | 密文头8B: 4698e40382190000 | 尾8B: 0000b5b3b229b200
+   key位置(相对addr): ±24B内无
+addr=0x140a0e0f0 key=0x78e8d4e5 len=5 'Size[00]'
+   前8B: 4698e40382190000 | 密文头8B: b5b3b229b2000000 | 尾8B: 000000e53fa8bc38
+   key位置(相对addr): ±24B内无
+addr=0x140a0e0f8 key=0x9a205b54 len=8 'Heading[00]'
+   前8B: b5b3b229b2000000 | 密文头8B: e53fa8bc3898e2fc | 尾8B: bc63764b37d133e4
+   key位置(相对addr): ±24B内无
+addr=0x140a0e114 key=0x465147ca len=5 'Name[00]'
+   前8B: 54738fe5d8000000 | 密文头8B: 76838e5590000000 | 尾8B: 00000000000000e7
+   key位置(相对addr): ±24B内无
+addr=0x140a0e120 key=0xe78ace39 len=9 'Distance[00]'
+   前8B: 9000000000000000 | 密文头8B: e7598afff95c00c1 | 尾8B: 000000000000002b
+   key位置(相对addr): ±24B内无
+addr=0x140a0e130 key=0x01c27468 len=10 'Text size[00]'
+   前8B: c300000000000000 | 密文头8B: 2b71077151b09d40 | 尾8B: 0000000000006e3f
+   key位置(相对addr): ±24B内无
+addr=0x140a0eea8 key=0x3ed51c75 len=9 'Distance[00]'
+   前8B: 6cd638936b000000 | 密文头8B: e5797572b4e2033f | 尾8B: 000000eaeb065e34
+   key位置(相对addr): ±24B内无
+addr=0x140a0eeb4 key=0xde71b045 len=5 'Path[00]'
+   前8B: b4e2033ffc000000 | 密文头8B: eaeb065e34000000 | 尾8B: 0000000000000042
+   key位置(相对addr): ±24B内无
+addr=0x140a0eec0 key=0xc633f47d len=10 'Max range[00]'
+   前8B: 3400000000000000 | 密文头8B: 42f8a15a28310d4e | 尾8B: 0000e0d834430ca2
+   key位置(相对addr): ±24B内无
+addr=0x140a0f260 key=0x26d80238 len=9 'Distance[00]'
+   前8B: 08e277ef8a000000 | 密文头8B: 743afad89aeaf85f | 尾8B: 00000004b836c90c
+   key位置(相对addr): ±24B内无
+addr=0x140a0f26c key=0x4e4bb072 len=5 'Path[00]'
+   前8B: 9aeaf85f4d000000 | 密文头8B: 04b836c90c000000 | 尾8B: 00000000000000ca
+   key位置(相对addr): ±24B内无
+addr=0x140a0f278 key=0x69b61488 len=10 'Max range[00]'
+   前8B: 0c00000000000000 | 密文头8B: cae61eed5d8e62a1 | 尾8B: 0000e1389cf4e57a
+   key位置(相对addr): ±24B内无
+addr=0x140a0f078 key=0xba35c85d len=9 'Distance[00]'
+   前8B: d2d1000000000000 | 密文头8B: 85f2be7f0b581c25 | 尾8B: 0000000000000030
+   key位置(相对addr): ±24B内无
+addr=0x140a0e198 key=0x3f5f8c90 len=6 'Shape[00]'
+   前8B: 80e6a66cd7870000 | 密文头8B: 2cec6e1c42f60000 | 尾8B: 00009443a11a1000
+   key位置(相对addr): ±24B内无
+addr=0x140a0e1a0 key=0x510806e3 len=5 'Size[00]'
+   前8B: 2cec6e1c42f60000 | 密文头8B: 9443a11a10000000 | 尾8B: 00000066242b2a45
+   key位置(相对addr): ±24B内无
+addr=0x140a0e1a8 key=0xf3309f32 len=8 'Heading[00]'
+   前8B: 9443a11a10000000 | 密文头8B: 66242b2a45549cef | 尾8B: 190b7a780dbd55ef
+   key位置(相对addr): ±24B内无
+addr=0x140a0e1c4 key=0xb6a193cc len=5 'Name[00]'
+   前8B: 25328f662d000000 | 密文头8B: 5c1b05b4fa000000 | 尾8B: 000000000000001f
+   key位置(相对addr): ±24B内无
+addr=0x140a0e1d0 key=0xc86aec1f len=9 'Distance[00]'
+   前8B: fa00000000000000 | 密文头8B: 1f86b3855cd935f4 | 尾8B: 00000000000000e2
+   key位置(相对addr): ±24B内无
+addr=0x140a0e1e0 key=0x6a13666e len=10 'Text size[00]'
+   前8B: 9500000000000000 | 密文头8B: e22b67d147957405 | 尾8B: 0000000000007faf
+   key位置(相对addr): ±24B内无
+DONE

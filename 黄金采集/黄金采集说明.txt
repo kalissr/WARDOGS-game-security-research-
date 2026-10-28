@@ -1,0 +1,26 @@
+黄金采集 (2026-10-26 06:36, 功能生效状态)
+==========================================
+采集条件: <TARGET>管理员运行 + Discord + <PRODUCT>Client 功能实际生效中
+方法: Python ctypes 直接读取(OpenProcess 0x0410 + ReadProcessMemory)
+来源: gold_capture 目录(146区/346MB, 已验证正确进程)
+
+文件清单(全部来自正确来源,已验证):
+  解密字符串_中文版.txt   ★ 450条唯一功能字符串(逐字节解密验证)
+  解密字符串_批量.json    ★ 632条含密钥/密文地址
+  真实航路点.json         ★ 43,988个3D坐标(X,Y非零,正确来源)
+  UE偏移表_修正版.json    ★ 4,279个偏移(含语义分类)
+  实战偏移表_top2000.json   TOP2000偏移+引用次数
+  Discord注入模块_工作态_4.5MB.bin  渲染模块运行时形态
+  game_base.txt            本次会话游戏基址(ASLR)
+
+字符串解密公式(已验证):
+  base = (i * 0x9E3779B1) ^ KEY
+  mixed = ((base >> 13) ^ base) * 0xC2B2AE35
+  plain[i] = cipher[i] ^ (mixed & 0xFF) ^ ((mixed >> 16) & 0xFF)
+验证: Discord.exe / HUD / AK-74 / 手刹 等全部正确
+
+偏移TOP(引用次数):
+  0x0AAA2CF0 (439次) — UE全局候选
+  0x0A784828 (359次) — GNames候选
+  0x0A45F5C0 (330次) — GWorld候选
+  0x01500000-0x01A00000段 — FNamePool块表

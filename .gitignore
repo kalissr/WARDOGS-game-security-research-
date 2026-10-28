@@ -1,0 +1,22 @@
+# 大型二进制文件（超过 Git 限制，不入库）
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.exe
+*.bin
+*.pkl
+*.npy
+*.pyc
+__pycache__/
+*.pem
+*.key
+
+# 中间产物
+*.log
+*.tmp
+auth3_*.hex
+cap_heap.bin
+hwbp_heap_dump_*.bin

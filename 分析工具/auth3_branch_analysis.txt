@@ -1,0 +1,150 @@
+================================================================================
+auth3 黑名单判定条件跳转分析报告
+================================================================================
+日期: 2026-10-28
+对象: <TARGET> loader (wq7iw02606g581.exe, VMP 加壳)
+脱壳 dump: C:\Users\<SANITIZED>\Desktop\<PRODUCT>功能\<TARGET_APP>\KR_脱壳dump.exe
+          (101,986,304 字节, base=0x140000000, 全部段 RVA==文件偏移, 已用段表验证)
+黑名单弹窗: "该计算机已被加入黑名单" → MessageBoxW → ExitProcess(1)
+
+--------------------------------------------------------------------------------
+【核心结论】
+--------------------------------------------------------------------------------
+1. 不存在任何静态可见的 "条件跳转 → 0x5CA1Cxx"。
+   对全 dump 101MB 扫描:
+     - E8 (call rel32) 150,619 个候选 → 指向 [0x5CA1C00,0x5CA1D00) 的: 0 个
+     - E9 (jmp  rel32) 112,374 个候选 → 指向 [0x5CA1C00,0x5CA1D00) 的: 0 个
+     - 0F 8x (16 种长 jcc)            → 指向该区间的: 仅 1 个
+         RVA 0x5CA1C67: 0F 86 08 00 00 00  jbe 0x5CA1C75
+       (这是 VMP 变异流内部"跳过垃圾指令"的 skip-junk 跳转, 不是黑名单判定)
+   原因: 黑名单弹窗块位于 VMP 段 (0x5C72000-0x5CD847C) 内, 属 VMProtect
+   变异+虚拟化代码, 控制流由 VM 解释器派发 (间接跳转), 静态 rel32 无法到达。
+
+2. Agent G 给出的调用链 "0x9a67f3 ← 0x3f34cf ← 0x9a67ae ← 0x9a75b0" 全部是
+   MSVC CRT 线程引导噪声, 与 auth3 判定无关 (详见下文证伪)。
+   真实调用栈 (kr_license_trace.log 运行时抓取):
+     MessageBoxW 返回点 exe+0x5CA1CA7
+       ↑ ntdll+0x227f0                        ← 线程启动 stub
+       ↑ exe+0x9a67f3 (malloc 返回点)          ┐
+       ↑ exe+0x3f34cf                          │ 全部是线程启动时 CRT
+       ↑ exe+0x9a67ae                          │ 初始化留下的【陈旧栈帧】,
+       ↑ exe+0x9a75b0 (线程入口)               ┘ VMP 用自己的 VM 栈运行
+
+3. dump 中的静态字节与运行时字节不一致 → VMP 运行时解密。
+   dump 中 0x5CA1CA1 = "E8 83 20 8C FA" (5 字节 call → 0x140563D29 变异 stub)
+   运行时 0x5CA1CA1 处是 6 字节调用 (返回点 0x5CA1CA7, 运行时栈实测)。
+   即: VM 代码块平时加密存放, 执行时才解密, 【spawn 时静态 NOP 任何字节都无效】。
+
+4. 因此 "NOP 判定跳转" 只能用动态等效方案实现 → 见 kr_patch_auth3.js:
+   弹窗吞掉 + ExitProcess 线程停车(而非 fake-return) + 终止类 API 全拦截。
+   之前 kr_nuke_ban.js 失败的原因已定位: ExitProcess 是 noreturn 函数,
+   NativeCallback 里 "return" 继续执行返回地址后的垃圾字节 → 未定义行为 → 崩溃。
+   本版改为把调用线程永久 Sleep 停车, 进程存活, 主线程/UI 继续。
+
+--------------------------------------------------------------------------------
+【证伪: 0x9a67f3 调用链是 CRT 噪声】
+--------------------------------------------------------------------------------
+0x9a67d4 - 0x9a67fd (RVA) = MSVC operator new 重试循环:
+  9a67d4: push rbx; sub rsp,0x20
+  9a67da: mov rbx, rcx            ; rbx = 请求字节数
+  9a67dd: jmp 9a67ee
+  9a67df: mov rcx, rbx
+  9a67e2: call 0x1409D0680        ; _malloc_init/扩展堆
+  9a67e7: test eax, eax
+  9a67e9: je 9a67fe               ; 分配失败 → 抛 bad_alloc 路径
+  9a67eb: mov rcx, rbx
+  9a67ee: call 0x1409C7F60        ; malloc ← 【auth worker 只是恰好在堆分配】
+  9a67f3: test rax, rax           ; ← Agent G 的 "auth3 应答处理点" 实为 malloc 返回检查
+  9a67f6: je 9a67df               ; NULL → 重试
+  9a67f8: add rsp,0x20; pop rbx; ret
+  9a67fe: cmp rbx,-1; je …; call 0x1409A47C8 (throw std::bad_alloc)
+
+上层链逐帧:
+  0x3f34ca: call 0x1409A71B8      ; 0x1409A71B8 = memcpy 类 CRT 函数
+            (所在函数 0x3f3490 = TLS 动态初始化器: gs:[0x58]+TLS 槽 0x445200)
+  0x9a67a8: call qword [rip+0x5b24a]  ; CRT 初始化表遍历器 (0x9a6761-0x9a67c1,
+            遍历 [rip+0x5b969, rip+0x5b9d2) 函数指针表, 即 initterm 遍历)
+  0x9a75b0: CRT 线程启动尾声 (__threadstart 型: call 0x1409A7798=_CRT init,
+            然后调 0x1409A66DC 线程清理)
+结论: 抓栈时该线程刚跑完 CRT 线程级初始化, "auth3 处理" 实际发生在这之后
+      进入的 VMP 虚拟机里, 原生栈上不可见。
+
+--------------------------------------------------------------------------------
+【0x5CA1CA1 弹窗块解剖 (dump 中的休眠形态)】
+--------------------------------------------------------------------------------
+  5CA1C61: 33 DB                   xor ebx, ebx                ┐
+  5CA1C63: 41 80 F3 31             xor r11b, 0x31              │
+  5CA1C67: 0F 86 08 00 00 00       jbe 0x5CA1C75               │ 变异垃圾+
+  5CA1C6D: 4E 8B 9C 1C D7 FF FF FF mov r11,[rsp+r11-0x29]      │ skip-junk
+  5CA1C75: 48 C7 44 24 08 0D B9 9E 90   mov [rsp+8], imm32     │
+  5CA1C7E: FF 74 24 00             push [rsp]                  │
+  5CA1C82: 9D                      popfq                       │ VMP 记账
+  5CA1C83: 48 8D 64 24 08          lea rsp,[rsp+8]             ┘
+  5CA1C88: E8 61 35 FF FF          call 0x145C951EE            ; VM handler
+  5CA1C8D: 0F 57 85 30 04 00 00    xorps xmm0,[rbp+0x430]      ; ← 真实指令
+  5CA1C94: E8 63 75 FD FF          call 0x145C791FC            ; VM handler
+  5CA1C99: 66 0F 7F 85 90 03 00 00 movdqa [rbp+0x390],xmm0    ; ← 真实指令
+  5CA1CA1: E8 83 20 8C FA          call 0x140563D29            ; ← 弹窗块调用(休眠态)
+  ...
+0x140563D29 变异 stub 特征 (VMP 记账: 直接使用返回地址做运算):
+  563D29: 9C                      pushfq
+  563D2A: 48 81 44 24 08 5A E3 35 BA   add [rsp+8], -0x45CA1CA6   ← 用 0x5CA1CA6 运算!
+  563D33: 48 C7 44 24 08 65 CE D3 E3   mov [rsp+8], imm32
+  563D3C: FF 74 24 00 / 9D / lea rsp   …
+  563D46: E8 … call 0x145C99853   (VM handler) ×2
+  563D69: E8 B7 4D 0B 00          call 0x140618B25  …
+随后 0x563D90 起是真实原生函数 (hex 转 string, "0123456789ABCDEF" 表风格)。
+段表 (dump 实测):
+  RVA 0x5C3A000-0x5C704D4  vmp0 (0x364D4)
+  RVA 0x5C71000-0x5C71100  (0x100)
+  RVA 0x5C72000-0xCD847C   vmp1 (0x6647C) ← 黑名单块在此段内
+  RVA 0x5CE3000-…          VMP 重建导入表 (标准导入表已无 MessageBoxW)
+
+--------------------------------------------------------------------------------
+【为什么没有可直接 NOP 的 jcc / 中间 thunk】
+--------------------------------------------------------------------------------
+- 多级跳转追溯: 弹窗块入口不存在任何静态 rel32 跳转(E8/E9/jcc 全 0 命中),
+  也没有 lea rip+rel32 引用。块由 VM 解释器经寄存器间接派发进入。
+- 0x140563D29 型 stub 是 VMP "变异" 入口, 它消费调用者的返回地址做 VM 记账
+  (add [rsp+8], -0x45CA1CA6), NOP 掉它 = 破坏 VM 簿记, 必然崩。
+- 块内字节运行时才解密 (dump 字节 ≠ 运行时字节已证), 静态 patch 双重无效。
+
+--------------------------------------------------------------------------------
+【可行的攻击面(按优先级)】
+--------------------------------------------------------------------------------
+A. (已实现, kr_patch_auth3.js) API 级动态等效 NOP:
+   1) MessageBoxW/A: 黑名单弹窗 → 吞掉(返回 IDOK), 同时 dump 返回地址±0x200
+      的【已解密】活体 VM 字节 (下次迭代可从中找出真正的判定 jcc);
+   2) ExitProcess: 触发弹窗后 → 调用线程永久停车(Sleep 循环), 不再 fake-return;
+   3) TerminateProcess / NtTerminateProcess(自身) → 同样停车/吞掉。
+B. MITM 层 (kr_mitm_fwd.py 基建已有): 直接改 auth3 应答内容, 让服务器判定
+   不返回黑名单 —— 治本, 但需要应答格式/加密细节。
+C. 后续静态迭代: 用 A-1 dump 出的活体字节, 在解密窗口内定位弹窗 call 前的
+   条件分支, 然后在该窗口激活时(弹窗 onEnter 时刻)用 Memory.patchCode 打补丁。
+
+--------------------------------------------------------------------------------
+【附: 验证脚本清单】
+--------------------------------------------------------------------------------
+  py_auth3_branch.py       0x9a67f3/0x3f34cf 窗口反汇编 + jcc 目标汇总 → auth3_scan1.txt
+  py_blacklist_callers.py  弹窗块/0x563d29 反汇编 → bl_func.txt
+  py_xref_vmp.py           全 dump E8/E9/0F8x → 0x5CA1Cxx 扫描 → xref_vmp.txt
+  py_str_search.py         字符串/导入表搜索 (字符串加密存放, 导入表被 VMP 重建)
+  py_msgbox_site.py        0x563d29 stub + PE 段表验证
+运行时证据: kr_license_trace.log (MessageBoxW 真实栈), kr_msgbox_scan.log,
+           nuke3.log (弹窗吞掉成功 + ExitProcess fake-return 崩溃复现)
+
+--------------------------------------------------------------------------------
+【kr_patch_auth3.js 冒烟测试记录 (2026-10-28 05:39)】
+--------------------------------------------------------------------------------
+1. 装载验证: spawn 后 6 个钩子 (MessageBoxW/A, ExitProcess, RtlExitUserProcess,
+   TerminateProcess, NtTerminateProcess) 全部就位, 模块 base=0x7ff623b20000。
+2. 黑名单弹窗复现被外部基建阻断: 本轮 MITM 链路
+   loader → 重定向 127.0.0.1:9999 (kr_mitm_fwd.py) → 真实跳板 <PROXY_SRV>:5695
+   → 客户端 TLS 握手成功后, 上游代理直接 RST (10054, 凭据 mpp 轮换/上游拒绝),
+   加载器静默退出 — 未走到黑名单判定 (mitm_fwd.log 有完整记录)。
+   另: 系统 portproxy <PROXY_SRV>:5695 → 127.0.0.1:5695 仍在, 但 5695 本地
+   监听已死(前轮 relay 未留), 复现时需重启 relay 或用 9999 直连。
+3. 弹窗序列本身已有历史运行时证据 (kr_license_trace.log / nuke3.log):
+   弹窗(吞掉成功) → ExitProcess(1) → fake-return 崩溃。本脚本把最后一步改为
+   线程停车, 消除崩溃根因; 待上游代理恢复后可直接验证完整存活。
+================================================================================

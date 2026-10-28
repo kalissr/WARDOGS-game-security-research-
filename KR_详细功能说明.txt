@@ -1,0 +1,48 @@
+<TARGET_APP> (wq7iw02606g581.exe) 详细功能说明
+==============================================
+目标游戏: <PRODUCT>Client-Win64-Shipping.exe (UE引擎撤离类射击)
+壳: Themida(区段名清空), 已脱壳
+类型: 外部型作弊(External) — 不注入游戏进程
+
+架构:
+  游戏进程 ←(NtReadVirtualMemory/NtWriteVirtualMemory syscall)→ <TARGET> 主进程 → Discord 注入渲染
+  无内核驱动(纯用户态 syscall)
+  NtOpenProcess(0x36)x7 + NtReadVM(0x3F)x16 + NtWriteVM(0x2A)x9
+
+一、代码还原(全部验证过)
+  KR_功能实现_反编译_13387函数.c   IDA: 11,494 有伪代码 / 1,056 失败
+  Ghidra补编_1050函数.c            修复 1,050 个失败函数
+  Ghidra补编_功能区300函数.c        ESP/驾驶/障碍子函数
+  注入模块_反编译_138函数.c         Discord 渲染模块(138函数全集)
+  KR_IDA数据库.i64 / 注入模块_IDA库.i64  可交互分析
+
+二、功能定位
+  功能函数映射表.txt    48个功能→地址
+  ESP过滤    0x1405b6640 (112KB 伪代码)
+  驾驶状态机 0x1405dd150 (42KB)
+  障碍/降落  0x1405d7220 (85KB)
+  暴击/装填  0x1405ce160 (330条字符串,汇编提取)
+
+三、数据(黄金采集/目录,全部来自正确进程)
+  解密字符串_全量.txt     705条(逐字节解密验证,中文587+英文118)
+  解密cache_物品库.json   1,099条中文物品名
+  glTF网格顶点.json       43,988个3D顶点(4张地图的网格数据)
+  UE偏移表_修正版.json    4,279个偏移(堆指针直方图)
+  cache_解密dump/         23个文件(解密后的glTF地图+物品库)
+  Discord注入模块_工作态_4.5MB.bin  渲染模块运行时
+
+四、cache 内容(已确认)
+  格式: glTF 2.0 (加密的3D地图网格)
+  地图: Europe/Kavkazi/NorthAmerica/Russia
+  用途: 雷达/小地图地形渲染
+  物品: 1,099条中文名(武器箱/医疗/保险箱等)
+
+五、字符串解密算法(已验证)
+  base = (i * 0x9E3779B1) ^ KEY
+  mixed = ((base >> 13) ^ base) * 0xC2B2AE35
+  plain[i] = cipher[i] ^ (mixed & 0xFF) ^ ((mixed >> 16) & 0xFF)
+
+六、注入方式
+  不注入游戏(外部型)
+  注入 Discord(渲染层): NtAllocateVirtualMemory 1MB + NtWriteVirtualMemory 渲染代码
+  DiscordSetup exe 是官方安装包(附带文件,非<TARGET>组件)

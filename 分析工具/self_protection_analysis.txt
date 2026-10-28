@@ -1,0 +1,253 @@
+================================================================================
+<TARGET> loader 自我保护机制分析报告 —— 它如何"看到"Frida, 以及如何反应
+================================================================================
+日期: 2026-10-28
+对象: <TARGET> loader (wq7iw02606g581.exe, 壳=VMP/Themida 系, 脱壳 dump 101MB)
+分析材料:
+  - C:\Users\<SANITIZED>\Desktop\<PRODUCT>功能\<TARGET_APP>\KR_脱壳dump.exe  (静态, base=0x140000000, RVA==文件偏移)
+  - C:\Users\<SANITIZED>\Desktop\<PRODUCT>功能\分析工作区\cap_heap.bin    (89.7MB, auth3 send 时刻全 rw 内存,
+    格式: 每区域 [8B addr][8B size][data], 共 127 区域)
+  - 分析工作区全部历史日志 (fs1/fs2/sc1/ss1/st1/smbrun2/cap_run*/nuke3 等)
+分析脚本: py_selfprot_1_strings.py ~ py_selfprot_8_vmpdec.py (本目录)
+
+--------------------------------------------------------------------------------
+【一句话结论】
+--------------------------------------------------------------------------------
+loader 在用户态【没有任何以 "frida" 为目标的实时扫描/击杀逻辑】;
+它的自我保护是"结构性防御"——壳的运行时解密+虚拟化、干净 ntdll 副本
+直系统调用、NT 级多源一致性校验、内核驱动物理内存硬件指纹——
+这些机制让 Frida 的【静态补丁、ntdll 导出钩子、API 层伪造】全部失效,
+但【不会因为发现 Frida 而当场杀进程】。拉黑判定发生在服务端,
+本地只是执行者(弹窗+ExitProcess)。"使用 Frida 被拉黑"最可能的通道是:
+① 父进程/环境等会话信息随 auth3 上报 (堆中有铁证: 父进程 python.exe
+的完整映像路径在 auth3 阶段被解析), ② 会话行为异常(心跳中断/异常退出/
+代理链路异常)被服务端记录。
+
+--------------------------------------------------------------------------------
+【证据 1】静态 dump 中没有 Frida 特征串 —— 用户态特征扫描不存在的第一证明
+--------------------------------------------------------------------------------
+对 101MB 脱壳 dump 全量扫描 (py_selfprot_1_strings.py):
+
+  "frida"   ASCII × 0  (仅 2 处 "Friday" 星期名误命中: 0xBBC8A2 / 0xC4B5E4)
+  "frida"   UTF16 × 0  (仅 1 处 "Friday": 0xC4B780)
+  "gum-js"/"gadget"/"linjector"/"frida-agent"/"frida-server"/"x64dbg"/
+  "cheatengine"/"ida64"/"scylla" 等 26 个特征 × 0
+
+堆 (cap_heap.bin, auth3 时刻活体内存) 中的 frida 相关内容【全部是 Frida
+自己留下的脚印】, 不是 loader 的检测特征:
+  0x18123A (Frida 私有区 0x181000): "frida_agent_main"
+  0x181350 (Frida 私有区): "pipe:role=client,name=frida-67431f9e..."
+  0x1810CC / 0x50E560: "\Local\Temp\frida-cfe9529e37eb0dee...\x86_64\frida-agent.dll"
+    (后者在进程堆 0x500000 区, 后随 "GDI32.dll" — 是一份模块枚举结果列表;
+     归属存疑: 我们的 Frida 脚本自己也调用了 Process.enumerate*/findExportByName,
+     frida-gum 同样会在进程堆里留下该列表。无法据此断定 loader 枚举过模块)
+
+反证 (证伪一条看似可疑的线索):
+  dump 中确有 "CreateToolhelp32Snapshot"/"Module32First"/"Module32Next"
+  (字符串 @0xC32590-0xC325C0), 引用点 0x9795B8/0x979811 两处。
+  但反汇编确认这是 OpenSSL 的 crypto\dso\dso_win32.c (DSO 加载器, 旁边
+  0xC32530 就是 'crypto\dso\dso_win32.c' 源文件名, 0xC32564 '%s.dll'),
+  用途是按模块句柄取 DLL 路径, 属于内嵌 OpenSSL 基础设施, 不是反注入检测。
+
+--------------------------------------------------------------------------------
+【证据 2】NtReadVirtualMemory 自读扫描: 反编译源码零命中, 堆中零快照
+--------------------------------------------------------------------------------
+  - 反编译 13387+1050+300 函数源码中: NtReadVirtualMemory/
+    NtQueryInformationProcess/ProcessDebugPort/IsDebuggerPresent × 0
+    (自检逻辑若存在也在壳的虚拟化段里, 反编译不可见)
+  - ssn_map.json (前期运行时观测) 证明 loader 持有并使用直接系统调用表:
+      NtReadVirtualMemory(63), NtWriteVirtualMemory(58), NtQuerySystemInformation(54),
+      NtQueryInformationProcess(25), NtOpenProcess(38), NtQueryVirtualMemory(35),
+      NtQueryValueKey(23) 等
+    —— 能力存在; 但本次堆中未发现 SystemProcessInformation 快照缓冲
+    (全堆搜 UTF-16 "System Idle Process"/"smss.exe"/"csrss.exe" × 0),
+    即 auth3/黑名单判定时刻【没有进行过用户态进程枚举】(游戏/Discord
+    进程枚举发生在认证通过之后, 功能阶段; "Discord.exe" 是功能串非检测串)。
+
+--------------------------------------------------------------------------------
+【证据 3】inline hook 完整性检测: 对 kernel32 导出无校验 (与实验一致)
+--------------------------------------------------------------------------------
+  实验 #3 (Memory.patchCode NOP ExitProcess 头 12 字节): 字节改成功, 进程
+  行为不变 —— 与静态分析一致: dump 中不存在对 kernel32/user32 导出函数
+  做字节校验的可静态定位代码; vmp1 段内的 CRC32 实现 (见证据 6) 只被 VM
+  解释器间接派发 (全 dump E8/E9/0F8x 对 CRC 函数 0x613675A/0x613676F 的
+  静态调用 × 0), 服务对象是壳自身的段完整性, 不覆盖系统 DLL。
+  真正让 NOP 无效的原因是【运行时才解密合成调用】(dump 字节≠运行时字节,
+  0x5CA1CA1 静态为 5 字节 call, 运行时为 6 字节), 这是"防静态补丁"而非
+  "hook 检测"。
+
+--------------------------------------------------------------------------------
+【证据 4】壳 = VMProtect/Themida 系, 且防护选项齐全 (Debugger/VM/完整性)
+--------------------------------------------------------------------------------
+静态 dump 0x6137F84-0x6138250 (vmp1 段, UTF-16 明文) = 壳的标准消息表:
+    "Memory allocation error."
+    "Error loading DLL "
+    "Error resolving imported function."
+    "File integrity violated."
+    "Your trial period has ended."
+    "Debugger detected - please disable it and restart the application."
+    "A valid license is required to run this application."
+    "This application cannot be run in virtual environments."
+    "Integrity check failed for file "
+    "The maximum number of allowed instances has been reached."
+  → 壳内置: 反调试器、反虚拟机、内存/文件完整性、许可证、实例数上限。
+  这些检查针对【真调试器(PEB BeingDebugged/DebugPort/断点)和虚拟机】,
+  Frida 的 Interceptor/spawn 不属于其打击面 —— 这正是实验 #1
+  (spawn+hook 走完整 auth 流程不触发任何杀进程) 的原因。
+
+反虚拟机检查在运行时才解密:
+  堆 0x49953EF (VMP 运行时解密代码区 0x4940000+0xB9000, 与 sites.log 的
+  [DS-DATA] 0x4994851 同一区域) 内唯一明文串: "\\.\VBoxGuest" (UTF-16)
+  → 壳的反 VM 选项会 CreateFileW 探测 VBox 虚拟设备。
+  该串在静态 dump 中 × 0 —— 所有检测特征串加密存放, 静态搜索对壳段无效。
+
+--------------------------------------------------------------------------------
+【证据 5】干净 ntdll 副本 + 直接系统调用 —— 专克 ntdll 导出钩子
+--------------------------------------------------------------------------------
+堆 0x7FFE3844D000 (0x1000, rw): 83 个连续 Zw stub (SSN 0,1,2,...):
+    mov r10,rcx; mov eax,SSN; test byte [0x7FFE0308],1;
+    jne int 2E; syscall; ret
+  = 有人把干净 ntdll 的 Zw stub 页拷贝到私有内存 (Frida 不做这件事;
+  loader 的 README 架构自述 "syscall NtReadVM/NtWriteVM" 与 st1.log 观测
+  [ST] SSN_15/37/140 直接系统调用完全吻合)。
+  效果: loader 走 syscall 指令而不走 ntdll!Zw* 导出 → 我们挂在 ntdll
+  导出上的 Interceptor 全部拦不到 (smbrun2.log "[SM] 直接系统调用改道: 0 处"
+  = 连 Stalker 都改不了它)。这是 loader 的反钩子基础设施。
+  注意: 它是"绕过", 不是"发现后惩罚" —— 所以 Frida 在场时 loader 照常跑。
+
+--------------------------------------------------------------------------------
+【证据 6】CRC32 代码完整性原语 (壳段内部自校验)
+--------------------------------------------------------------------------------
+dump 0x61365E4-0x6136795 (vmp1 段) 完整 CRC32 家族:
+  - 位迭代内核 (xor/shr/表查, 0x613704-0x61371E)
+  - SSE 加速 16 字节块版 (0x613666B-0x61366EF)
+  - 运行时建表器 (poly 0xEDB88320, 0x613727-0x613659)
+  - 零结尾字符串 CRC32 (0x613675A→0x613676F)
+  表 @0x61369A8 (另有一份 zlib 用表 @0xC3E410, 属内嵌 zlib/OpenSSL)。
+  无静态调用者 → 由 VM 解释器派发, 用于壳段自身的完整性记帐。
+  哈希特征盘点: SHA1 表(72处)/SHA256 表(17处)/MD5 init(2处)/FNV-1a64
+  (offset 472处+prime 518处) —— FNV 是 loader 字符串混淆密钥派生(已知),
+  SHA/MD5 属内嵌 TLS/OpenSSL。没有对自身代码做周期性哈希巡检的定时器
+  逻辑痕迹 (timeSetEvent/CreateTimerQueueTimer/SetTimer 导入名 × 0)。
+
+--------------------------------------------------------------------------------
+【证据 7】NT 级多源一致性校验 (反 API 伪造)
+--------------------------------------------------------------------------------
+fs1/fs2/smbrun2/sc1 观测: loader 启动期直接 NtQueryValueKey 读注册表原始
+"Hostname" 值 11 次 (绕过 GetComputerNameW)。伪造实验 (fs2.log):
+  伪造 Hostname+MachineGuid → auth 流程异常, ExitProcess(0x8f)
+  → loader 多源比对 (API 层 vs NT 注册表层 vs 内核 SMBIOS 层), 不一致即败。
+  配套: RTCore64.sys (MSI Afterburner 漏洞驱动, MmMapIoSpace 物理内存映射)
+  + wxrjsqxyz.sys (IoCreateDevice+MmMapLockedPagesSpecifyCache) 内核级
+  CPU/SMBIOS 指纹; 解密串中含 ntoskrnl.exe/PsGetProcessId/PsGetProcessPeb/
+  PsGetProcessImageFileName/PsInitialSystemProcess (内核侧进程访问)。
+  用户态伪造 (hook API/内存) 对这条链路完全无效。
+
+--------------------------------------------------------------------------------
+【证据 8】auth3 阶段 loader 在堆中留下的"会话环境"痕迹 —— 自动封禁通道
+--------------------------------------------------------------------------------
+cap_heap.bin (auth3 send 时刻) 进程堆 0x500000+0xEE000 中:
+  a) 完整环境块副本 (ASCII: [REDACTED_TOOL]_*、GIT_EDITOR、PATH 含 [REDACTED_APP]、
+     PythonIOENCODING 等 —— 全部继承自 Frida/python 父环境的明文拷贝)
+  b) 【父进程映像路径被解析并存堆】: 0x170B3C 独立小区块 (0x170000+0x2000)
+     中唯一内容 = "[REDACTED_PATH]\python.exe" (UTF-16, 树节点结构)。
+     Frida CLI 跑在 Python 里 → loader 的父进程就是 python.exe。
+     正常用户的父进程是 explorer.exe/cmd.exe。loader 在 auth3 阶段就解析了
+     父进程完整路径 —— 这是"无需出现 frida 字符串即可识别自动化注入"的
+     经典通道 (NtQueryInformationProcess(ProcessBasicInformation)→
+     InheritedFromUniqueProcessId→QueryFullProcessImageNameW)。
+  c) 自身路径 5 份副本 (含 \Device\HarddiskVolume3\... NT 路径形态)
+  d) 一张 Windows 缓解策略名表 (0x50C5A0-0x5118C0, 0x80 字节槽):
+     mandatoryaslr/highentropyaslr/bottomupaslr/returnflowguard/
+     win32kfiltering/preferSystem32/exportaddressfilter(+plus)/
+     importaddressfilter/ropstackpivotdetection/ropcallerdetection/
+     ropgadgetdetection/ropsimexec/dependentmodulesdontinherittamperprotection
+     + AppContainer 能力 SID (S-1-15-3-*) + "devicecapabilitycamera" +
+     "WindowsRetailDemo" + "C:\Windows\System32\NSI.dll"。
+     该表【不在静态 dump、不在本机 System32 任一 DLL/IFEO 注册表】中,
+     只能是运行时解密/组装产物。归属两说: loader 自身配置(查询/设置自身
+     缓解策略, EAF/IAF 类缓解若启用会干扰钩子行为——实验中钩子正常,
+     故未激进启用), 或系统 API 的解码数据。列为待定证据, 不作定论。
+
+  关于 "auth3 密文在 Frida 在场/不在场时完全相同":
+     若两次都是 frida spawn (只是钩子开关不同), 环境与父进程相同 →
+     密文相同【不能】推出"auth3 不含环境信息"。判定需用 ChaCha 密钥流
+     (crypto/ks_G1.bin 已恢复) 解密一次真实 auth3 明文做终审。
+
+--------------------------------------------------------------------------------
+【对五个问题的直接回答】
+--------------------------------------------------------------------------------
+1. 是否运行时扫描内存中的 Frida 特征?
+   否。静态无特征串(壳段加密, 但壳消息表/代码结构均无 frida 目标);
+   堆中 frida 串全是 Frida 自身脚印; 无 NtReadVirtualMemory 自读快照;
+   无进程枚举快照(auth3 时刻)。能力(SSN 表)有, 行为(此刻)无。
+
+2. 是否检测 inline hook (函数头被改)?
+   否(至少对 kernel32 导出)。ExitProcess 头 NOP 后无任何反应, 与静态
+   一致。它用"运行时解密合成调用"防静态补丁, 用直系统调用防 ntdll 钩子,
+   而不是检测钩子本身。
+
+3. 是否有代码完整性校验?
+   有原语无常态巡检: vmp1 段内完整 CRC32 家族(表+建表+SSE 加速+字符串版),
+   仅 VM 派发, 校验对象为壳自身段; 无定时器式周期巡检痕迹。
+
+4. "自动封禁"机制是什么?
+   判定在服务端: 黑名单经 auth3 应答下发 → 本地弹窗"该计算机已被加入
+   黑名单" + ExitProcess(1) (kr_license_trace.log 栈: exe+0x5ca1ca7)。
+   触发通道按可能性排序:
+   ① 会话环境上报: 父进程路径 python.exe 在 auth3 时刻就被解析(堆铁证),
+      环境块副本也在堆中 —— 服务端见到"父进程=python/异常环境"即可标记;
+   ② 会话行为: MITM 链路 (127.0.0.1 重定向→跳板) 导致的 TLS/连接异常、
+      mpp 凭据轮换失败、心跳中断 (nuke 系列实验 RST 10054 有记录);
+   ③ HWID 规则: 内核驱动取的 CPU/SMBIOS 指纹绑定卡密, 异常多会话/
+      多指纹变化触发风控。本地无"发现 Frida→上报"的实时逻辑。
+
+5. 反制措施:
+   A. 断"父进程"通道 (最优先): 改用 attach 模式(进程由 explorer 启动后
+      再注入), 或用改名/良性图像的宿主进程做 spawn (自写 C/Go spawner),
+      使 InheritedFromUniqueProcessId 指向 benign 进程。
+   B. 断"环境"通道: CreateProcess 显式传干净 lpEnvironment (剔除
+      [REDACTED_TOOL]_*/GIT_*/PYTHON*/含 [REDACTED_APP] 的 PATH 等)。
+   C. 若担心模块枚举: PEB.Ldr 三链摘除 frida-agent 模块节点 + 抹除
+      %TEMP%\frida-*\frida-agent.dll 路径串 (该路径不含 "frida" 二进制
+      特征也会被路径规则命中)。
+   D. 绕直系统调用: 干净 stub 页 + syscall 指令不可改 → 用 DBVM watch/
+      硬件断点(调试寄存器)级钩子, 或内核驱动 SSDT 以下层拦截;
+      用户态 Interceptor 对其天然无效。
+   E. 绕 NT 一致性校验: 必须三层同伪 (API 层 + NtQueryValueKey 层 +
+      内核 SMBIOS 层), 已有 [RD] NtQueryValueKey Hostname 伪造成例,
+      SMBIOS 内核层尚未完成 (smbios_real.bin 为空)。
+   F. 终审 auth3 明文: 用已恢复密钥流解密真实 auth3, 确认环境/父进程/
+      模块信息是否在报文中 —— 决定 A/B/C 的优先级。
+   G. 心跳与退出礼仪: 拦截退出后线程停车(现行方案)保活, 维持服务端
+      会话视图正常, 避免行为风控样本积累。
+
+--------------------------------------------------------------------------------
+【证据索引 (全部可复验)】
+--------------------------------------------------------------------------------
+静态 dump (KR_脱壳dump.exe, RVA==偏移):
+  0x6137F84-0x6138250  壳消息表 (Debugger detected / virtual environments /
+                        integrity / license / instances, UTF-16 明文)
+  0x61365E4-0x6136795  CRC32 家族 (vmp1 段, VM 派发, 无静态调用者)
+  0x61369A8            CRC32 查表  |  0xC3E410 zlib CRC 表
+  0x389900+ SHA1 表 ×72 | 0x3984C0+ SHA256 表 ×17 | FNV-1a64 ×472/518
+  0x979540/0x9797B0    OpenSSL DSO win32_modname (Toolhelp, 非检测)
+  0x5CA1CA1            黑名单弹窗块 (休眠态, 运行时解密)
+堆 cap_heap.bin (127 区域, [addr][size][data]):
+  0x511606  ropgadgetdetection  0x510B40 ropcallerdetection
+  0x50FD7A  ropstackpivotdetection  0x50C8A0 ropsimexec (缓解策略名表, 归属待定)
+  0x49953EF "\\.\VBoxGuest" (VMP 解密代码区 0x4940000+0xB9000 内)
+  0x7FFE3844D000 干净 ntdll Zw stub 页 ×83 (SSN 0..82, syscall/int2E 回退)
+  0x170B3C  "[REDACTED_PATH]\python.exe" (父进程映像路径, auth3 时刻)
+  0x18123A/0x181350/0x1810CC Frida agent 自身脚印
+  0x500000+0xEE000 进程堆: 环境块副本 + 缓解策略名表 + AppContainer SID
+日志:
+  fs1/fs2 (NtQueryValueKey Hostname×11, 伪造→ExitProcess(0x8f))
+  st1 (SSN_15/37/140 直接系统调用), smbrun2 (直 syscall 改道失败)
+  kr_license_trace (黑名单弹窗栈), nuke3 (ExitProcess 假返回崩溃)
+  hwid_check/net_trace (<CFG_HOST> /proxy.mpp → <PROXY_SRV>:5695 →
+  <AUTH_API> 认证链路)
+分析脚本: py_selfprot_1_strings.py, py_selfprot_2_heap.py, py_selfprot_3_rop.py,
+  py_selfprot_4_crc.py, py_selfprot_5_modenum.py, py_selfprot_6_env.py,
+  py_selfprot_7_regions.py, py_selfprot_8_vmpdec.py
+================================================================================
